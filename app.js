@@ -32,7 +32,7 @@ async function insertPolygons() {
 
  
 
-    // όρισμος δύο πολυγόνων με  μοναδίκο RegionID και συντεταγμένες(Define two polygons with unique RegionID and coordinates) 
+    // όρισμος δύο πολυγόνων με  μοναδίκο RegionID και συντεταγμένες 
 
     const polygons = [ 
 
