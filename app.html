@@ -1,0 +1,297 @@
+<!DOCTYPE html> 
+
+<html lang="en"> 
+
+<head> 
+
+  <meta charset="UTF-8"> 
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"> 
+
+  <title>Polygon and Trip Map</title> 
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.7.1/dist/leaflet.css" /> 
+
+  <style> 
+
+    #map { 
+
+      height: 80vh; 
+
+      width: 100%; 
+
+    } 
+
+    #controls { 
+
+      position: absolute; 
+
+      top: 10px; 
+
+      left: 10px; 
+
+      z-index: 1000; 
+
+      background-color: white; 
+
+      padding: 10px; 
+
+      border-radius: 5px; 
+
+    } 
+
+  </style> 
+
+</head> 
+
+<body> 
+
+  <div id="controls"> 
+
+    <label for="mapType">Choose Map Type:</label> 
+
+    <select id="mapType"> 
+
+      <option value="polygons">Polygons</option> 
+
+      <option value="trips">Trips</option> 
+
+    </select> 
+
+    <br><br> 
+
+    
+
+    <label for="regionID">Enter RegionID (for Polygons):</label> 
+
+    <input type="text" id="regionID" placeholder="Enter RegionID"> 
+
+    <br><br> 
+
+ 
+
+    <label for="mmsi">Enter MMSI (for Trips):</label> 
+
+    <input type="text" id="mmsi" placeholder="Enter MMSI"> 
+
+  </div> 
+
+  
+
+  <div id="map"></div> 
+
+  
+
+  <script src="https://unpkg.com/leaflet@1.7.1/dist/leaflet.js"></script> 
+
+  <script> 
+
+    // Initialize the map 
+
+    const map = L.map('map').setView([37.94, 23.58], 13); // Set to center of polygons 
+
+ 
+
+    // Add OpenStreetMap tiles 
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+
+      maxZoom: 19, 
+
+      attribution: '&copy; OpenStreetMap contributors' 
+
+    }).addTo(map); 
+
+ 
+
+    // Variables to store the polygons and trips layers 
+
+    let polygonsLayer = null; 
+
+    let tripsLayer = null; 
+
+ 
+
+    // Function to fetch polygons from the backend 
+
+    async function fetchPolygons(regionID = null) { 
+
+      try { 
+
+        const response = await fetch('/polygons'); 
+
+        const polygons = await response.json(); 
+
+ 
+
+        // Create a layer group for polygons 
+
+        const polygonLayerGroup = L.layerGroup(); 
+
+ 
+
+        // Loop through the polygons and add them to the map 
+
+        polygons.forEach(polygon => { 
+
+          if (!regionID || polygon.RegionID === regionID) { // Filter by RegionID if provided 
+
+            const coordinates = polygon.geometry.coordinates[0].map(coord => [coord[1], coord[0]]); // Convert [lon, lat] to [lat, lon] 
+
+            const polygonLayer = L.polygon(coordinates, { color: 'blue' }).addTo(polygonLayerGroup); 
+
+          } 
+
+        }); 
+
+ 
+
+        // Store the polygon layer for later use 
+
+        polygonsLayer = polygonLayerGroup; 
+
+ 
+
+      } catch (error) { 
+
+        console.error('Error fetching polygons:', error); 
+
+      } 
+
+    } 
+
+ 
+
+    // Function to fetch trips from the backend 
+
+    async function fetchTrips(mmsi = null) { 
+
+      try { 
+
+        const response = await fetch('/trips'); 
+
+        const trips = await response.json(); 
+
+ 
+
+        // Create a layer group for trips 
+
+        const tripLayerGroup = L.layerGroup(); 
+
+ 
+
+        // Loop through the trips and add them to the map 
+
+        trips.forEach(trip => { 
+
+          if (!mmsi || trip.MMSI === parseInt(mmsi)) { // Filter by MMSI if provided, parse MMSI as an integer 
+
+            const tripCoordinates = trip.Trip.map(coord => [coord.coordinates[1], coord.coordinates[0]]); // Convert [lon, lat] to [lat, lon] 
+
+            
+
+            // Create a polyline for each trip 
+
+            L.polyline(tripCoordinates, { color: 'red' }).addTo(tripLayerGroup); 
+
+          } 
+
+        }); 
+
+ 
+
+        // Store the trips layer for later use 
+
+        tripsLayer = tripLayerGroup; 
+
+ 
+
+      } catch (error) { 
+
+        console.error('Error fetching trips:', error); 
+
+      } 
+
+    } 
+
+ 
+
+    // Function to toggle between polygons and trips 
+
+    function toggleMapLayer() { 
+
+      const mapType = document.getElementById('mapType').value; 
+
+      const regionID = document.getElementById('regionID').value.trim(); 
+
+      const mmsi = document.getElementById('mmsi').value.trim(); 
+
+ 
+
+      // Clear the map 
+
+      map.eachLayer(layer => { 
+
+        map.removeLayer(layer); 
+
+      }); 
+
+ 
+
+      // Add the selected layer 
+
+      if (mapType === 'polygons') { 
+
+        fetchPolygons(regionID).then(() => { 
+
+          if (polygonsLayer) polygonsLayer.addTo(map); 
+
+        }); 
+
+      } else if (mapType === 'trips') { 
+
+        fetchTrips(mmsi).then(() => { 
+
+          if (tripsLayer) tripsLayer.addTo(map); 
+
+        }); 
+
+      } 
+
+ 
+
+      // Add the base tile layer again 
+
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { 
+
+        maxZoom: 19, 
+
+        attribution: '&copy; OpenStreetMap contributors' 
+
+      }).addTo(map); 
+
+    } 
+
+ 
+
+    // Event listener for the dropdown change 
+
+    document.getElementById('mapType').addEventListener('change', toggleMapLayer); 
+
+    document.getElementById('regionID').addEventListener('input', toggleMapLayer); 
+
+    document.getElementById('mmsi').addEventListener('input', toggleMapLayer); 
+
+ 
+
+    // Fetch and display polygons and trips when the page loads 
+
+    fetchPolygons(); 
+
+    fetchTrips(); 
+
+  </script> 
+
+</body> 
+
+</html> 
