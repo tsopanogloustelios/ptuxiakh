@@ -1,0 +1,88 @@
+db.AISInput.aggregate([ 
+
+$match{  
+
+     longitude: { $gte: 23.0301,$lte: 24.3567 }, 
+
+      latitude: { $gte: 37.2781, $lte: 38.4802 } 
+
+} 
+
+$group{_id: {MMSI: "$ship_id",T: "$timestamp" }, 
+
+ doc: { $first: "$$ROOT" } 
+
+} 
+
+$replaceRoot{ 
+
+newRoot: "$doc" 
+
+} 
+
+$sort{ 
+
+      "ship_id": 1, 
+
+      "timestamp": 1 
+
+} 
+
+$merge{ 
+
+into: "AISInputFiltered", 
+
+  whenMatched: "merge", 
+
+  whenNotMatched: "insert" 
+
+}
+
+db.AISInputFiltered.updateMany( { }, [ { $set: { geom: { type: "Point", coordinates: ["$longitude", "$latitude"] } } } ] ); 
+
+//Periods
+db.Periods.insertMany ([  
+
+{ "PeriodId": 1,  
+
+ "Tstart": ISODate("2020-03-01T09:40:30Z"),   
+
+"Tend": ISODate("2020-03-01T12:40:30Z") },   
+
+{ "PeriodId": 2,   
+
+"Tstart": ISODate("2020-03-01T15:16:33Z"),   
+
+"Tend": ISODate("2020-03-01T15:36:33Z") }	 
+
+])  
+
+//Points
+  db.Points.insertMany([ { "_id": 1, "PosX": 23.619211, "PosY": 37.936766, "Geom": { "type": "Point", "coordinates": [23.619211, 37.936766] } },   
+
+{ "_id": 2, "PosX": 23.553793, "PosY": 37.882566, "Geom": { "type": "Point", "coordinates": [23.553793, 37.882566] } },  
+
+ { "_id": 3, "PosX": 23.694878, "PosY": 37.682683, "Geom": { "type": "Point", "coordinates": [23.694878, 37.682683] } } ]); 
+
+
+//Vessels
+db.AISInputFiltered.aggregate([ { $group: { _id: "$ship_id" } }, { $sort: { _id: 1 } }, { $project: { _id: 0, MMSI: "$_id" } }, { $merge: { into: "Vessels", whenMatched: "merge", whenNotMatched: "insert" } }  
+
+//indexes 
+db.Vessels.createIndex({ MMSI: 1 }, { unique: true }); 
+
+db.Points.createIndex({ Geom: "2dsphere" }); 
+
+db.Regions.createIndex({ geometry: "2dsphere" }); 
+
+db.Trips.createIndex({ MMSI: 1 }); 
+
+db.Trips.createIndex({ MMSI: 1, TripId: 1 }, { unique: true }); 
+
+db.Trips.createIndex({ trip: "2dsphere" }); 
+
+db.AISInputFiltered.createIndex({ geom: "2dsphere" }); 
+
+db.AISInputFiltered.createIndex({ ship_id: 1 }); 
+
+db.AISInputFiltered.createIndex({ timestamp_1: 1 }); 
