@@ -1,0 +1,212 @@
+--CREATE EXTENSION
+CREATE EXTENSION postgis;
+CREATE EXTENSION postgis_topology;
+
+--CREATE AIS TABLE
+
+CREATE TABLE AISInput(
+T	timestamp,
+MMSI integer,
+Longitude float,
+Latitude float
+);
+
+INSERT TO TABLE FROM CSV FILE
+sudo chmod 777 /path/to/csvfile
+COPY AISInput(T, MMSI, Longitude, Latitude)
+FROM 'C:\Users\stelios tsopanoglou\OneDrive\Documents\queries_and_data/benchmark_dataset.csv' DELIMITER  ',' CSV HEADER;
+
+CREATE TABLE AISInputFiltered AS
+SELECT DISTINCT ON(MMSI,T) *
+FROM AISInput
+WHERE Longitude BETWEEN 23.0301 and 24.3567 AND Latitude BETWEEN 37.2781 AND 38.4802;
+
+ALTER TABLE AISInputFiltered
+ADD COLUMN geom geometry(Point,4326);
+
+
+UPDATE AISInputFiltered
+SET Geom=subquery.ST_Transform FROM (SELECT MMSI,T,Longitude,Latitude,ST_Transform(ST_SetSRID(ST_MakePoint(Longitude, Latitude), 4326), 4326) FROM AISInputFiltered) AS subquery
+WHERE AISInputFiltered.longitude=subquery.longitude AND AISInputFiltered.latitude=subquery.latitude AND AISInputFiltered.T=subquery.T AND AISInputFiltered.MMSI=subquery.MMSI;
+
+--CREATE REGIONS
+
+CREATE TABLE Regions (
+RegionId integer PRIMARY KEY,
+Geom Geometry(Polygon)
+);
+
+INSERT INTO Regions (regionid, geom) VALUES (
+ 1,
+ ST_GeometryFromText('POLYGON((23.585103 37.933684,23.572229 37.936528,23.570684 37.949524,23.579953 37.954667,23.589223 37.955209,23.597634 37.946816,23.585103 37.933684))')
+);
+
+INSERT INTO Regions (regionid, geom) VALUES (
+2,
+ST_GeometryFromText('POLYGON((23.622697 37.563405,23.555406 37.663487,23.62819 37.736288,23.786119 37.709675,23.783372 37.57429,23.622697 37.563405))')
+);
+
+
+ALTER TABLE Regions
+ALTER COLUMN geom TYPE geometry(POLYGON, 4326)
+USING ST_SetSRID(geom,4326);
+
+
+--CREATE PERIODS
+
+CREATE TABLE Periods (
+PeriodId integer PRIMARY KEY,
+Tstart timestamp,
+Tend timestamp
+);
+
+INSERT INTO Periods (periodid,tstart,tend) VALUES (1,'01/03/2020 09:40:30','01/03/2020 12:40:30');
+INSERT INTO Periods (periodid,tstart,tend) VALUES (2,'01/03/2020 15:16:33','01/03/2020 15:36:33');
+
+--CREATE POINTS
+	
+CREATE TABLE Points (
+PointId integer PRIMARY KEY,
+PosX double precision,
+PosY double precision,
+Geom Geometry(Point)
+);
+
+
+INSERT INTO Points (PointId,PosX,PosY,Geom) VALUES (1,23.619211,37.936766,ST_Transform(ST_SetSRID(ST_MakePoint(23.619211,37.936766), 4326), 4326));
+INSERT INTO Points (PointId,PosX,PosY,Geom) VALUES (2,23.553793,37.882566,ST_Transform(ST_SetSRID(ST_MakePoint(23.553793,37.882566), 4326), 4326));
+INSERT INTO Points (PointId,PosX,PosY,Geom) VALUES (3,23.694878,37.682683,ST_Transform(ST_SetSRID(ST_MakePoint(23.694878,37.682683), 4326), 4326));
+
+--CREATE VESSELS TABLE
+
+CREATE TABLE Vessels (
+MMSI integer PRIMARY KEY
+);
+
+INSERT INTO Vessels (MMSI) SELECT DISTINCT MMSI from AISInputFiltered;
+
+--CREATE TRIPS
+
+CREATE TABLE Trips(MMSI, Trip, Tstart, Tend) AS
+SELECT MMSI, ST_Transform(ST_MakeLine(Geom ORDER BY T),4326), MIN(T) as Tstart, MAX(T) as Tend FROM AISInputFiltered GROUP BY MMSI;
+
+ALTER TABLE trips ADD COLUMN TripId SERIAL;
+ALTER TABLE trips ADD PRIMARY KEY (MMSI,TripId);
+ALTER TABLE trips ADD FOREIGN KEY (MMSI) REFERENCES Vessels(MMSI);
+
+--CREATE INDEXES
+
+CREATE UNIQUE INDEX Vessels_MMSI_Idx ON Vessels USING btree(MMSI);
+CREATE INDEX Points_Geom_Idx ON Points USING gist(Geom);
+CREATE INDEX Regions_Geom_Idx ON Regions USING gist(Geom);
+CREATE INDEX Trips_MMSI_idx ON Trips USING btree(MMSI);
+CREATE UNIQUE INDEX Trips_pkey_idx ON Trips USING btree(MMSI, TripId);
+CREATE INDEX Trips_gist_idx ON Trips USING gist(trip);
+indexes not in mobilitydb
+CREATE INDEX AIS_Geom_Idx ON AISInputFiltered USING gist(Geom);
+CREATE INDEX AIS_MMSI_Idx ON AISInputFiltered USING btree(MMSI);
+CREATE INDEX AIS_T_Idx ON AISInputFiltered USING btree(T);
+
+
+--Range Queries
+
+-- 1. List the vessels that have passed at a region from Regions:
+
+-- check
+SELECT DISTINCT R.RegionId, T.MMSI
+FROM Trips T, Regions R
+WHERE ST_Intersects(T.Trip, R.Geom)
+ORDER BY R.RegionId, T.MMSI;
+
+-- 2. List the vessels that were within a region from Regions during a period from Periods.
+
+-- 32 rows vs 38 rows
+
+SELECT DISTINCT R.RegionId, P.PeriodId, AF.MMSI
+FROM AISInputFiltered AF, Regions R, Periods P
+WHERE ST_Intersects(AF.Geom, R.Geom) AND
+AF.T >= P.Tstart AND AF.T <= P.Tend
+ORDER BY R.RegionId, P.PeriodId, AF.MMSI;
+
+-- other attempt
+-- 143 rows vs 38 rows
+-- wrong query possibly
+SELECT R.RegionId, P.PeriodId, T.MMSI, ST_AsText(T.Trip), T.Tstart, T.Tend
+FROM Trips T, Regions R, Periods P
+WHERE ST_Intersects(T.Trip, R.Geom) AND
+((T.Tstart >= P.Tstart AND T.Tstart <= P.Tend) OR (P.Tstart >= T.Tstart AND P.Tstart <= T.Tend) OR (T.Tend >= P.Tstart AND T.Tend <= P.Tend) OR (P.Tend >= T.Tstart AND P.Tend <= T.Tend) OR (P.Tstart >= T.Tstart AND P.Tend <= T.Tend) OR (T.Tstart >= P.Tstart AND T.Tend <= P.Tend))
+ORDER BY R.RegionId, P.PeriodId, T.MMSI;
+
+-- 3. List the pairs of vessels that were both located within a region from Regions during a period from Periods.
+
+-- 196 rows vs 243 rows
+SELECT DISTINCT AF1.MMSI AS Vessel1, AF2.MMSI AS Vessel2, R.RegionId, P.PeriodId
+FROM AISInputFiltered AF1, AISInputFiltered AF2, Regions R, Periods P
+WHERE AF1.MMSI < AF2.MMSI AND ST_Intersects(AF1.Geom,R.Geom) AND ST_Intersects(AF2.Geom,R.Geom) AND
+AF1.T >= P.Tstart AND AF1.T <= P.Tend AND AF2.T >= P.Tstart AND AF2.T <= P.Tend
+ORDER BY AF1.MMSI, AF2.MMSI, R.RegionId, P.PeriodId;
+
+SELECT DISTINCT T1.MMSI AS Vessel1, T2.MMSI AS Vessel2, R.RegionId, P.PeriodId
+FROM Trips T1, Trips T2, Regions R, Periods P
+WHERE T1.MMSI < T2.MMSI AND ST_Intersects(T1.Trip, R.Geom) AND ST_Intersects(T2.Trip, R.Geom) AND
+((T1.Tstart >= P.Tstart AND T1.Tstart <= P.Tend) OR (P.Tstart >= T1.Tstart AND P.Tstart <= T1.Tend) OR (T1.Tend >= P.Tstart AND T1.Tend <= P.Tend) OR (P.Tend >= T1.Tstart AND P.Tend <= T1.Tend) OR (P.Tstart >= T1.Tstart AND P.Tend <= T1.Tend) OR (T1.Tstart >= P.Tstart AND T1.Tend <= P.Tend)) AND
+((T2.Tstart >= P.Tstart AND T2.Tstart <= P.Tend) OR (P.Tstart >= T2.Tstart AND P.Tstart <= T2.Tend) OR (T2.Tend >= P.Tstart AND T2.Tend <= P.Tend) OR (P.Tend >= T2.Tstart AND P.Tend <= T2.Tend) OR (P.Tstart >= T2.Tstart AND P.Tend <= T2.Tend) OR (T2.Tstart >= P.Tstart AND T2.Tend <= P.Tend))
+ORDER BY T1.MMSI, T2.MMSI, R.RegionId, P.PeriodId;
+
+-- 4. List the first time at which a vessel visited a point in Points.
+
+-- check
+SELECT Intersected.MMSI, Intersected.PointId, MIN(Intersected.T) AS Instant FROM
+(SELECT AF.MMSI, P.PointId, AF.T
+FROM AISInputFIltered AF, Points P
+WHERE ST_Intersects(AF.Geom, P.Geom)) AS Intersected
+GROUP BY Intersected.MMSI, Intersected.PointId;
+
+-- 7. Count the number of trips that were active during each hour in March 1, 2020.
+	
+-- check
+WITH TimeSplit AS (
+SELECT H AS Tstart, H + interval '1 hour' AS Tend
+FROM generate_series(timestamptz '2020-03-01 00:00:00', timestamptz '2020-03-01 23:00:00', interval '1 hour') AS H )
+SELECT S.Tstart, S.Tend, COUNT(*)
+FROM TimeSplit S, Trips T
+WHERE ((T.Tstart >= S.Tstart AND T.Tstart <= S.Tend) OR (S.Tstart >= T.Tstart AND S.Tstart <= T.Tend) OR (T.Tend >= S.Tstart AND T.Tend <= S.Tend) OR (S.Tend >= T.Tstart AND S.Tend <= T.Tend) OR (S.Tstart >= T.Tstart AND S.Tend <= T.Tend) OR (T.Tstart >= S.Tstart AND T.Tend <= S.Tend))
+GROUP BY S.Tstart, S.Tend
+ORDER BY S.Tstart;
+
+-- 8. List the overall traveled distances of the vessels during the periods from Periods.
+
+-- Few different lines, different distances
+-- 471 rows vs 550 rows
+SELECT AF.MMSI, P.PeriodId, P.Tstart, P.Tend, ST_Length(ST_Transform(ST_MakeLine(Geom ORDER BY AF.T),4326)) AS Distance
+FROM AISInputFIltered AF, Periods P
+WHERE AF.T >= P.Tstart AND AF.T <= P.Tend
+GROUP BY AF.MMSI, P.PeriodId
+ORDER BY AF.MMSI, P.PeriodId;
+
+
+-- 9. List the minimum distance ever between each vessel and each point from Points.
+
+--check
+-- few lines are different due to decimals in distances (can be ignored), same number of results
+SELECT T.MMSI, P.PointId, MIN(ST_Distance(T.Trip,P.Geom)) AS MinDistance
+FROM Trips T, Points P
+GROUP BY T.MMSI, P.PointId
+ORDER BY T.MMSI, P.PointId;
+
+-- 10. List the minimum temporal distance between each pair of vessels.
+
+--check
+-- few lines are different due to decimals in distances (can be ignored), same number of results
+SELECT T1.MMSI AS Vessel1, T2.MMSI AS Vessel2, MIN(ST_Distance(T1.Trip,T2.Trip)) AS MinDistance
+FROM Trips T1, Trips T2
+WHERE T1.MMSI < T2.MMSI AND ((T1.Tstart >= T2.Tstart AND T1.Tstart <= T2.Tend) OR (T2.Tstart >= T1.Tstart AND T2.Tstart <= T1.Tend) OR (T1.Tend >= T2.Tstart AND T1.Tend <= T2.Tend) OR (T2.Tend >= T1.Tstart AND T2.Tend <= T1.Tend) OR (T2.Tstart >= T1.Tstart AND T2.Tend <= T1.Tend) OR (T1.Tstart >= T2.Tstart AND T1.Tend <= T2.Tend))AND T1.MMSI < 100000006 AND T2.MMSI <1000000010
+GROUP BY T1.MMSI, T2.MMSI
+ORDER BY T1.MMSI, T2.MMSI;
+
+-- 11. List the nearest approach time, distance, and shortest line between each pair of trips.
+
+SELECT AF1.MMSI AS Vessel1, AF2.MMSI AS Vessel2, MIN(ST_Distance(AF1.Geom,AF2.Geom)), ST_AsText(ST_MakeLine(AF1.Geom,AF2.Geom))
+FROM AISInputFiltered AF1, AISInputFiltered AF2
+WHERE AF1.MMSI < AF2.MMSI AND AF1.MMSI < 100000002 AND AF2.MMSI <100000002
+GROUP BY AF1.MMSI, AF2.MMSI, AF1.Geom, AF2.Geom;
